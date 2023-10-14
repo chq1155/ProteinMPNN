@@ -433,7 +433,7 @@ def tied_featurize(batch, device, chain_dict, fixed_position_dict=None, omit_AA_
         X_out = X[:,:,0]
     else:
         X_out = X
-    return X_out, S, mask, lengths, chain_M, chain_encoding_all, letter_list_list, visible_list_list, masked_list_list, masked_chain_length_list_list, chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, pssm_coef_all, pssm_bias_all, pssm_log_odds_all, bias_by_res_all, tied_beta
+    return b['seq'], X_out, S, mask, lengths, chain_M, chain_encoding_all, letter_list_list, visible_list_list, masked_list_list, masked_chain_length_list_list, chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, pssm_coef_all, pssm_bias_all, pssm_log_odds_all, bias_by_res_all, tied_beta
 
 
 
@@ -507,6 +507,19 @@ class StructureDataset():
                     print('{} entries ({} loaded) in {:.1f} s'.format(len(self.data), i+1, elapsed))
             if verbose:
                 print('discarded', discard_count)
+
+        self.transform_data()
+    
+    def transform_data(self):
+        for d in self.data:
+            d['num_of_chains'] = 1
+            d['visible_list'] = []
+            d["masked_list"] = ['A']
+            d['coords_chain_A'] = {}
+            for a in ["N", "CA", "C", "O"]:
+                d['coords_chain_A'][a + "_chain_A"] = d["coords"][a]
+            d["seq_chain_A"] = d["seq"]
+
     def __len__(self):
         return len(self.data)
 
@@ -1097,7 +1110,7 @@ class ProteinMPNN(nn.Module):
 
         logits = self.W_out(h_V)
         log_probs = F.log_softmax(logits, dim=-1)
-        return log_probs
+        return log_probs, h_V
 
 
 
