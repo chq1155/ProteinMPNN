@@ -32,10 +32,14 @@ def main(args):
     
     hidden_dim = 128
     num_layers = 3 
-  
+    
+    import pickle
+    def save_dict_to_pickle(dictionary, filename):
+        with open(filename, 'wb') as file:
+            pickle.dump(dictionary, file)
 
-    if args.path_to_model_weights:
-        model_folder_path = args.path_to_model_weights
+    if True:
+        model_folder_path = "/root/ProteinMPNN/vanilla_model_weights"
         if model_folder_path[-1] != '/':
             model_folder_path = model_folder_path + '/'
     else: 
@@ -161,7 +165,7 @@ def main(args):
                     if AA in list(bias_AA_dict.keys()):
                             bias_AAs_np[n] = bias_AA_dict[AA]
     
-    if args.pdb_path:
+    if False:
         pdb_dict_list = parse_PDB(args.pdb_path, ca_only=args.ca_only)
         dataset_valid = StructureDatasetPDB(pdb_dict_list, truncate=None, max_length=args.max_length)
         all_chain_list = [item[-1:] for item in list(pdb_dict_list[0]) if item[:9]=='seq_chain'] #['A','B', 'C',...]
@@ -223,17 +227,19 @@ def main(args):
     total_residues = 0
     protein_list = []
     total_step = 0
+    count = 0
     # Validation epoch
     with torch.no_grad():
         test_sum, test_weights = 0., 0.
         for ix, protein in enumerate(dataset_valid):
+            count += 1 
             score_list = []
             global_score_list = []
             all_probs_list = []
             all_log_probs_list = []
             S_sample_list = []
             batch_clones = [copy.deepcopy(protein) for i in range(BATCH_COPIES)]
-            X, S, mask, lengths, chain_M, chain_encoding_all, chain_list_list, visible_list_list, masked_list_list, masked_chain_length_list_list, chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, pssm_coef, pssm_bias, pssm_log_odds_all, bias_by_res_all, tied_beta = tied_featurize(batch_clones, device, chain_id_dict, fixed_positions_dict, omit_AA_dict, tied_positions_dict, pssm_dict, bias_by_res_dict, ca_only=args.ca_only)
+            ori_seq ,X, S, mask, lengths, chain_M, chain_encoding_all, chain_list_list, visible_list_list, masked_list_list, masked_chain_length_list_list, chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, pssm_coef, pssm_bias, pssm_log_odds_all, bias_by_res_all, tied_beta = tied_featurize(batch_clones, device, chain_id_dict, fixed_positions_dict, omit_AA_dict, tied_positions_dict, pssm_dict, bias_by_res_dict, ca_only=args.ca_only)
             pssm_log_odds_mask = (pssm_log_odds_all > args.pssm_threshold).float() #1.0 for true, 0.0 for false
             name_ = batch_clones[0]['name']
             if args.score_only:
@@ -254,7 +260,7 @@ def main(args):
                         S[:,:input_seq_length] = S_input #assumes that S and S_input are alphabetically sorted for masked_chains
                     for j in range(NUM_BATCHES):
                         randn_1 = torch.randn(chain_M.shape, device=X.device)
-                        log_probs = model(X, S, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_1)
+                        log_probs, mpnn_emb = model(X, S, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_1)
                         mask_for_loss = mask*chain_M*chain_M_pos
                         scores = _scores(S, log_probs, mask_for_loss)
                         native_score = scores.cpu().data.numpy()
@@ -307,7 +313,7 @@ def main(args):
                 np.savez(unconditional_probs_only_file, log_p=concat_log_p, S=S[0,].cpu().numpy(), mask=mask[0,].cpu().numpy(), design_mask=mask_out)
             else:
                 randn_1 = torch.randn(chain_M.shape, device=X.device)
-                log_probs = model(X, S, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_1)
+                log_probs, mpnn_emb1 = model(X, S, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_1)
                 mask_for_loss = mask*chain_M*chain_M_pos
                 scores = _scores(S, log_probs, mask_for_loss) #score only the redesigned part
                 native_score = scores.cpu().data.numpy()
@@ -331,7 +337,7 @@ def main(args):
                                 sample_dict = model.tied_sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=args.pssm_multi, pssm_log_odds_flag=bool(args.pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(args.pssm_bias_flag), tied_pos=tied_pos_list_of_lists_list[0], tied_beta=tied_beta, bias_by_res=bias_by_res_all)
                             # Compute scores
                                 S_sample = sample_dict["S"]
-                            log_probs = model(X, S_sample, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_2, use_input_decoding_order=True, decoding_order=sample_dict["decoding_order"])
+                            log_probs, mpnn_emb2 = model(X, S_sample, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_2, use_input_decoding_order=True, decoding_order=sample_dict["decoding_order"])
                             mask_for_loss = mask*chain_M*chain_M_pos
                             scores = _scores(S_sample, log_probs, mask_for_loss)
                             scores = scores.cpu().data.numpy()
@@ -414,7 +420,21 @@ def main(args):
                 total_length = X.shape[1]
                 if print_all:
                     print(f'{num_seqs} sequences of length {total_length} generated in {dt} seconds')
-   
+                
+            data_dict = {
+            "coords": X.squeeze().detach(),
+            "seq": ori_seq,
+            "mask": mask.detach(),
+            "emb": mpnn_emb2.squeeze().detach(),
+            "emb_sup": mpnn_emb1.squeeze().detach()
+            }
+
+            filename = '/root/mpnn_cath/valid/' + str(count) + '.pkl'
+            save_dict_to_pickle(data_dict, filename)
+            
+            if count%100 == 0:
+                print(count)
+
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -427,7 +447,7 @@ if __name__ == "__main__":
     argparser.add_argument("--use_soluble_model", action="store_true", default=False, help="Flag to load ProteinMPNN weights trained on soluble proteins only.")
 
 
-    argparser.add_argument("--seed", type=int, default=0, help="If set to 0 then a random seed will be picked;")
+    argparser.add_argument("--seed", type=int, default=37, help="If set to 0 then a random seed will be picked;")
  
     argparser.add_argument("--save_score", type=int, default=0, help="0 for False, 1 for True; save score=-log_prob to npy files")
     argparser.add_argument("--save_probs", type=int, default=0, help="0 for False, 1 for True; save MPNN predicted probabilites per position")
@@ -446,10 +466,10 @@ if __name__ == "__main__":
     argparser.add_argument("--max_length", type=int, default=200000, help="Max sequence length")
     argparser.add_argument("--sampling_temp", type=str, default="0.1", help="A string of temperatures, 0.2 0.25 0.5. Sampling temperature for amino acids. Suggested values 0.1, 0.15, 0.2, 0.25, 0.3. Higher values will lead to more diversity.")
     
-    argparser.add_argument("--out_folder", type=str, help="Path to a folder to output sequences, e.g. /home/out/")
+    argparser.add_argument("--out_folder", type=str, default='/root/mpnn_cath/', help="Path to a folder to output sequences, e.g. /home/out/")
     argparser.add_argument("--pdb_path", type=str, default='', help="Path to a single PDB to be designed")
     argparser.add_argument("--pdb_path_chains", type=str, default='', help="Define which chains need to be designed for a single PDB ")
-    argparser.add_argument("--jsonl_path", type=str, help="Path to a folder with parsed pdb into jsonl")
+    argparser.add_argument("--jsonl_path", type=str, default='/root/chain_set_valid.jsonl', help="Path to a folder with parsed pdb into jsonl")
     argparser.add_argument("--chain_id_jsonl",type=str, default='', help="Path to a dictionary specifying which chains need to be designed and which ones are fixed, if not specied all chains will be designed.")
     argparser.add_argument("--fixed_positions_jsonl", type=str, default='', help="Path to a dictionary with fixed positions")
     argparser.add_argument("--omit_AAs", type=list, default='X', help="Specify which amino acids should be omitted in the generated sequence, e.g. 'AC' would omit alanine and cystine.")
